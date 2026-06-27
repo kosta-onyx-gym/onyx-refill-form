@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -10,9 +11,11 @@
 <body style="background:#111114;color:#f5f5f5;font-family:-apple-system,system-ui,sans-serif;margin:0;padding:0;min-height:100vh;">
 
 <script>
-// ── CONFIG — only two things to change if you ever redeploy ───────────────────
-var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbymVTGnLgyiJGWSJxybdnXVi_sr0Cy1ntg_w4Zc01Ucl_nqCHEJBY9jkvUhLdrQA6IUxQ/exec';
-var PIN        = '6699';
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+// After deploying the Cloudflare Worker, paste YOUR worker URL below.
+// It will look like: https://onyx-refill-proxy.YOURNAME.workers.dev
+var WORKER_URL = 'https://onyx-refill-proxy.YOURNAME.workers.dev';
+var PIN        = '1234';  // ← change this
 </script>
 
 <!-- Loading overlay -->
@@ -119,76 +122,47 @@ var PIN        = '6699';
 </div>
 
 <script>
-// ── STATE ──────────────────────────────────────────────────────────────────────
 var S={name:"",type:"Machine Refill",product:"",qty:1,items:[],allProducts:[],selectedCat:"All",searchText:""};
 var PILL_LABELS=["All","Pre-Workout","Energy","Protein RTD","Snacks","Meals"];
 var PILL_TO_CAT={"All":null,"Pre-Workout":"Pre-Workout","Energy":"Energy & Sports","Protein RTD":"Protein RTD","Snacks":"Protein Snacks","Meals":"Ready-Made Meals"};
 
-// ── SPINNER ───────────────────────────────────────────────────────────────────
 var spinAngle=0,spinInterval=null;
-function startSpin(msg){
-  document.getElementById("loadMsg").textContent=msg||"Loading…";
-  document.getElementById("loading").style.display="flex";
-  spinInterval=setInterval(function(){spinAngle+=10;document.getElementById("spinner").style.transform="rotate("+spinAngle+"deg)";},20);
-}
+function startSpin(msg){document.getElementById("loadMsg").textContent=msg||"Loading…";document.getElementById("loading").style.display="flex";spinInterval=setInterval(function(){spinAngle+=10;document.getElementById("spinner").style.transform="rotate("+spinAngle+"deg)";},20);}
 function stopSpin(){clearInterval(spinInterval);document.getElementById("loading").style.display="none";}
 
-// ── JSONP — bypasses CORS completely ─────────────────────────────────────────
-function jsonp(url, onSuccess, onError) {
-  var fn = '_cb_' + Date.now() + '_' + Math.floor(Math.random()*9999);
-  var timer = setTimeout(function(){
-    delete window[fn];
-    if(onError) onError(new Error('Request timed out'));
-  }, 15000);
-  window[fn] = function(data){
-    clearTimeout(timer);
-    delete window[fn];
-    if(script.parentNode) script.parentNode.removeChild(script);
-    onSuccess(data);
-  };
-  var script = document.createElement('script');
-  script.onerror = function(){
-    clearTimeout(timer);
-    delete window[fn];
-    if(onError) onError(new Error('Failed to reach server'));
-  };
-  script.src = url + (url.indexOf('?')>=0?'&':'?') + 'callback=' + fn;
-  document.body.appendChild(script);
-}
-
-// ── INIT ──────────────────────────────────────────────────────────────────────
 window.onload=function(){
   var now=new Date();
   var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   document.getElementById("dateDisp").textContent=DAYS[now.getDay()]+" "+now.getDate()+" "+MONTHS[now.getMonth()];
-  var h=now.getHours();
-  document.getElementById("shiftDisp").textContent=h<12?"AM shift":h<17?"Midday":"PM shift";
+  var h=now.getHours();document.getElementById("shiftDisp").textContent=h<12?"AM shift":h<17?"Midday":"PM shift";
   document.getElementById("pinInput").focus();
 };
 
-// ── PIN ───────────────────────────────────────────────────────────────────────
+// ── API calls via Cloudflare Worker — no CORS, no Google routing ──────────────
+function api(params, onSuccess, onError) {
+  var qs = Object.keys(params).map(function(k){ return k+'='+encodeURIComponent(params[k]); }).join('&');
+  fetch(WORKER_URL + '?' + qs)
+    .then(function(r){ return r.json(); })
+    .then(onSuccess)
+    .catch(onError);
+}
+
 function checkPin(){
   var entered=document.getElementById("pinInput").value.trim();
-  if(!entered) return;
+  if(!entered)return;
   if(entered===PIN.toString()){
     document.getElementById("pinScreen").style.display="none";
     startSpin("Loading products…");
-    jsonp(
-      SCRIPT_URL+"?action=getData",
+    api({action:'getData'},
       function(data){
         S.allProducts=data.products;
         var sel=document.getElementById("staffSel");
         data.staff.forEach(function(n){var o=document.createElement("option");o.value=n;o.textContent=n;sel.appendChild(o);});
-        renderPills(); renderProductList();
-        stopSpin();
+        renderPills();renderProductList();stopSpin();
         document.getElementById("main").style.display="block";
       },
-      function(err){
-        stopSpin();
-        alert("Could not load products.\n\n"+err);
-        document.getElementById("pinScreen").style.display="flex";
-      }
+      function(err){stopSpin();alert("Could not load products.\n\n"+err);document.getElementById("pinScreen").style.display="flex";}
     );
   } else {
     document.getElementById("pinError").style.display="block";
@@ -197,47 +171,35 @@ function checkPin(){
   }
 }
 
-// ── PILLS ─────────────────────────────────────────────────────────────────────
 function renderPills(){
   var c=document.getElementById("catPills");c.innerHTML="";
   PILL_LABELS.forEach(function(label){
     var active=label===S.selectedCat;
-    var btn=document.createElement("button");
-    btn.textContent=label;btn.onclick=function(){selectCat(label);};
+    var btn=document.createElement("button");btn.textContent=label;btn.onclick=function(){selectCat(label);};
     btn.style.cssText="flex-shrink:0;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:"+(active?"700":"500")+";cursor:pointer;white-space:nowrap;border:1px solid "+(active?"#8DCA76":"#27272a")+";background:"+(active?"#8DCA76":"#18181b")+";color:"+(active?"#111114":"#9ca3af")+";";
     c.appendChild(btn);
   });
 }
 function selectCat(label){S.selectedCat=label;S.searchText="";document.getElementById("searchInp").value="";renderPills();renderProductList();}
-
-// ── SEARCH ────────────────────────────────────────────────────────────────────
 function onSearch(){S.searchText=document.getElementById("searchInp").value;if(S.searchText){S.selectedCat="";renderPills();}renderProductList();}
 
-// ── PRODUCT LIST ──────────────────────────────────────────────────────────────
 function filteredProducts(){
   var cat=PILL_TO_CAT[S.selectedCat];
   return S.allProducts.filter(function(p){return(!cat||p.category===cat)&&(!S.searchText||p.name.toLowerCase().indexOf(S.searchText.toLowerCase())>=0);});
 }
 function renderProductList(){
-  var inner=document.getElementById("productListInner");
-  var noRes=document.getElementById("noResults");
-  var filtered=filteredProducts();
+  var inner=document.getElementById("productListInner"),noRes=document.getElementById("noResults"),filtered=filteredProducts();
   if(!filtered.length){inner.innerHTML="";noRes.style.display="block";return;}
   noRes.style.display="none";
   inner.innerHTML=filtered.map(function(p,idx){
-    var sel=p.name===S.product;
-    var last=idx===filtered.length-1;
-    var dn=p.name,q=S.searchText;
+    var sel=p.name===S.product,last=idx===filtered.length-1,dn=p.name,q=S.searchText;
     if(q){var i=p.name.toLowerCase().indexOf(q.toLowerCase());if(i>=0)dn=p.name.slice(0,i)+'<span style="color:#8DCA76;font-weight:700;">'+p.name.slice(i,i+q.length)+'</span>'+p.name.slice(i+q.length);}
     var safe=p.name.replace(/\\/g,"\\\\").replace(/'/g,"\\'");
-    return '<div onclick="selectProduct(\''+safe+'\')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:'+(sel?"#1a2e1a":"transparent")+';border-left:3px solid '+(sel?"#8DCA76":"transparent")+';'+(last?"":'border-bottom:1px solid #1f1f23;')+'">'+
-      '<span style="font-size:14px;font-weight:'+(sel?"700":"400")+';color:'+(sel?"#8DCA76":"#d1d5db")+';">'+dn+'</span>'+(sel?'<span style="color:#8DCA76;font-size:18px;font-weight:900;">✓</span>':'')+
-    '</div>';
+    return '<div onclick="selectProduct(\''+safe+'\')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:'+(sel?"#1a2e1a":"transparent")+';border-left:3px solid '+(sel?"#8DCA76":"transparent")+';'+(last?"":'border-bottom:1px solid #1f1f23;')+'"><span style="font-size:14px;font-weight:'+(sel?"700":"400")+';color:'+(sel?"#8DCA76":"#d1d5db")+';">'+dn+'</span>'+(sel?'<span style="color:#8DCA76;font-size:18px;font-weight:900;">✓</span>':'')+' </div>';
   }).join("");
 }
 function selectProduct(name){S.product=(S.product===name)?"":name;document.getElementById("selectedProductLabel").textContent=S.product?"— "+S.product:"";document.getElementById("addErr").style.display="none";renderProductList();}
 
-// ── QTY / TYPE ────────────────────────────────────────────────────────────────
 function dQty(d){S.qty=Math.max(1,S.qty+d);document.getElementById("qtyNum").textContent=S.qty;}
 function setType(t,idx){
   S.type=t;
@@ -247,16 +209,12 @@ function setType(t,idx){
   ap("tgl0",idx===0?on:off);ap("tgl1",idx===1?on:off);
 }
 
-// ── ADD / LIST ────────────────────────────────────────────────────────────────
 function addItem(){
   if(!S.product){document.getElementById("addErr").style.display="block";return;}
   document.getElementById("addErr").style.display="none";
-  var idx=-1;
-  for(var i=0;i<S.items.length;i++){if(S.items[i].product===S.product&&S.items[i].type===S.type){idx=i;break;}}
+  var idx=-1;for(var i=0;i<S.items.length;i++){if(S.items[i].product===S.product&&S.items[i].type===S.type){idx=i;break;}}
   if(idx>=0)S.items[idx].qty+=S.qty;else S.items.push({product:S.product,qty:S.qty,type:S.type});
-  S.product="";S.qty=1;
-  document.getElementById("qtyNum").textContent="1";
-  document.getElementById("selectedProductLabel").textContent="";
+  S.product="";S.qty=1;document.getElementById("qtyNum").textContent="1";document.getElementById("selectedProductLabel").textContent="";
   renderProductList();renderList();checkReady();
 }
 function removeItem(i){S.items.splice(i,1);renderList();checkReady();}
@@ -267,59 +225,41 @@ function renderList(){
   var total=S.items.reduce(function(s,i){return s+i.qty;},0);
   document.getElementById("listCount").textContent=S.items.length+" product"+(S.items.length>1?"s":"")+" · "+total+" units";
   document.getElementById("itemList").innerHTML=S.items.map(function(item,i){
-    return '<div style="background:#18181b;border:1px solid #27272a;border-radius:12px;padding:13px 16px;display:flex;align-items:center;justify-content:space-between;">'+
-      '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;"><span style="font-size:14px;font-weight:600;color:#e5e7eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.product+'</span>'+
-      (item.type==="Birthday Gift"?'<span style="font-size:11px;background:rgba(245,158,11,0.15);color:#f59e0b;padding:2px 7px;border-radius:6px;font-weight:600;flex-shrink:0;">🎂 gift</span>':'')+
-      '</div><div style="display:flex;align-items:center;gap:12px;flex-shrink:0;"><span style="font-size:17px;font-weight:900;color:#8DCA76;">×'+item.qty+'</span>'+
-      '<button onclick="removeItem('+i+')" style="background:none;border:none;color:#374151;font-size:16px;cursor:pointer;padding:4px 6px;">✕</button></div></div>';
+    return '<div style="background:#18181b;border:1px solid #27272a;border-radius:12px;padding:13px 16px;display:flex;align-items:center;justify-content:space-between;"><div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;"><span style="font-size:14px;font-weight:600;color:#e5e7eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.product+'</span>'+(item.type==="Birthday Gift"?'<span style="font-size:11px;background:rgba(245,158,11,0.15);color:#f59e0b;padding:2px 7px;border-radius:6px;font-weight:600;flex-shrink:0;">🎂 gift</span>':'')+
+    '</div><div style="display:flex;align-items:center;gap:12px;flex-shrink:0;"><span style="font-size:17px;font-weight:900;color:#8DCA76;">×'+item.qty+'</span><button onclick="removeItem('+i+')" style="background:none;border:none;color:#374151;font-size:16px;cursor:pointer;padding:4px 6px;">✕</button></div></div>';
   }).join("");
 }
-
-// ── READY ─────────────────────────────────────────────────────────────────────
 function checkReady(){
-  S.name=document.getElementById("staffSel").value;
-  var ok=S.name&&S.items.length>0;
-  var btn=document.getElementById("subBtn");
-  btn.disabled=!ok;btn.style.opacity=ok?"1":"0.35";btn.style.cursor=ok?"pointer":"not-allowed";
+  S.name=document.getElementById("staffSel").value;var ok=S.name&&S.items.length>0;
+  var btn=document.getElementById("subBtn");btn.disabled=!ok;btn.style.opacity=ok?"1":"0.35";btn.style.cursor=ok?"pointer":"not-allowed";
   document.getElementById("hint").textContent=!S.name?"Select your name to continue":S.items.length===0?"Add at least one product":"";
 }
 
-// ── SUBMIT — JSONP, no CORS issues ────────────────────────────────────────────
 function submitForm(){
-  S.name=document.getElementById("staffSel").value;
-  if(!S.name||!S.items.length)return;
+  S.name=document.getElementById("staffSel").value;if(!S.name||!S.items.length)return;
   startSpin("Saving to sheet…");
-  var payload={date:new Date().toISOString(),name:S.name,items:S.items};
-  var url=SCRIPT_URL+"?action=submit&payload="+encodeURIComponent(JSON.stringify(payload));
-  jsonp(
-    url,
+  api({action:'submit',payload:JSON.stringify({date:new Date().toISOString(),name:S.name,items:S.items})},
     function(data){stopSpin();if(data.success)showSuccess();else alert("Error: "+data.error);},
     function(err){stopSpin();alert("Network error. Try again.\n\n"+err);}
   );
 }
 
-// ── SUCCESS / RESET ───────────────────────────────────────────────────────────
 function showSuccess(){
   var total=S.items.reduce(function(s,i){return s+i.qty;},0);
   document.getElementById("sSub").textContent=S.name+" · "+S.items.length+" product"+(S.items.length>1?"s":"")+" · "+total+" units";
   document.getElementById("sList").innerHTML=S.items.map(function(i){
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #1f1f23;"><span style="font-size:14px;color:#d1d5db;">'+i.product+(i.type==="Birthday Gift"?" 🎂":"")+'</span><span style="font-size:15px;font-weight:900;color:#8DCA76;">×'+i.qty+'</span></div>';
   }).join("");
-  document.getElementById("main").style.display="none";
-  document.getElementById("success").style.display="flex";
+  document.getElementById("main").style.display="none";document.getElementById("success").style.display="flex";
 }
 function reset(){
   S.items=[];S.product="";S.qty=1;S.name="";S.selectedCat="All";S.searchText="";
-  document.getElementById("staffSel").value="";
-  document.getElementById("searchInp").value="";
-  document.getElementById("qtyNum").textContent="1";
-  document.getElementById("selectedProductLabel").textContent="";
-  document.getElementById("listSec").style.display="none";
-  document.getElementById("itemList").innerHTML="";
+  document.getElementById("staffSel").value="";document.getElementById("searchInp").value="";
+  document.getElementById("qtyNum").textContent="1";document.getElementById("selectedProductLabel").textContent="";
+  document.getElementById("listSec").style.display="none";document.getElementById("itemList").innerHTML="";
   document.getElementById("addErr").style.display="none";
   setType("Machine Refill",0);renderPills();renderProductList();checkReady();
-  document.getElementById("main").style.display="block";
-  document.getElementById("success").style.display="none";
+  document.getElementById("main").style.display="block";document.getElementById("success").style.display="none";
 }
 </script>
 </body>
